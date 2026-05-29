@@ -1,7 +1,8 @@
-from flask import Flask, render_template, request, jsonify
+import socket
+import json
 import chess
-
-app = Flask(__name__)
+import webbrowser
+import os
 
 board = chess.Board()
 
@@ -10,96 +11,207 @@ players = {
     "black": False
 }
 
+HOST = "0.0.0.0"
+PORT = 5000
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+ip = socket.gethostbyname(socket.gethostname())
 
+print(f"http://{ip}:{PORT}")
 
-@app.route("/join")
-def join():
+webbrowser.open(f"http://{ip}:{PORT}")
 
-    role = "spectator"
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    if not players["white"]:
-        players["white"] = True
-        role = "white"
+server.bind((HOST, PORT))
 
-    elif not players["black"]:
-        players["black"] = True
-        role = "black"
+server.listen(5)
 
-    print("Jugador conectado:", role)
+base = os.path.dirname(os.path.abspath(__file__))
 
-    return jsonify({
-        "role": role,
-        "fen": board.fen()
-    })
+while True:
 
+    client, address = server.accept()
 
-@app.route("/board")
-def get_board():
+    request = client.recv(4096).decode()
 
-    return jsonify({
-        "fen": board.fen(),
-        "turn": "white" if board.turn else "black",
-        "checkmate": board.is_checkmate(),
-        "stalemate": board.is_stalemate()
-    })
+    if not request:
+        client.close()
+        continue
 
+    line = request.split("\n")[0]
 
-@app.route("/move", methods=["POST"])
-def move():
+    method = line.split(" ")[0]
 
-    data = request.json
+    path = line.split(" ")[1]
 
-    role = data["role"]
-    move_text = data["move"]
+    if path == "/":
+        path = "/templates/index.html"
 
-    move = chess.Move.from_uci(move_text)
+    try:
 
-    if move not in board.legal_moves:
+        if path.endswith(".html"):
 
-        return jsonify({
-            "success": False,
-            "message": "Movimiento ilegal"
-        })
+            file = open(
+                os.path.join(base, path[1:]),
+                "r",
+                encoding="utf-8"
+            )
 
-    turn = "white" if board.turn else "black"
+            body = file.read()
 
-    if role != turn:
+            file.close()
 
-        return jsonify({
-            "success": False,
-            "message": "No es tu turno"
-        })
+            content_type = "text/html"
 
-    board.push(move)
+        elif path.endswith(".css"):
 
-    print("Movimiento:", move_text)
+            file = open(
+                os.path.join(base, path[1:]),
+                "r",
+                encoding="utf-8"
+            )
 
-    result = {
-        "success": True,
-        "fen": board.fen()
-    }
+            body = file.read()
 
-    if board.is_checkmate():
+            file.close()
 
-        winner = "Blancas" if board.turn == chess.BLACK else "Negras"
+            content_type = "text/css"
 
-        result["game_over"] = f"Jaque mate. Ganaron las {winner}"
+        elif path.endswith(".js"):
 
-    elif board.is_stalemate():
+            file = open(
+                os.path.join(base, path[1:]),
+                "r",
+                encoding="utf-8"
+            )
 
-        result["game_over"] = "Empate"
+            body = file.read()
 
-    return jsonify(result)
+            file.close()
 
+            content_type = "application/javascript"
 
-if __name__ == "__main__":
+        elif method == "GET" and path == "/join":
 
-    app.run(
-        host="0.0.0.0",
-        port=5000,
-        debug=True
-    )
+            role = "spectator"
+
+            if not players["white"]:
+                players["white"] = True
+                role = "white"
+
+            elif not players["black"]:
+                players["black"] = True
+                role = "black"
+
+            body = json.dumps({
+                "role": role,
+                "fen": board.fen()
+            })
+
+            content_type = "application/json"
+
+        elif method == "GET" and path == "/board":
+
+            body = json.dumps({
+                "fen": board.fen(),
+                "turn": "white" if board.turn else "black",
+                "checkmate": board.is_checkmate(),
+                "stalemate": board.is_stalemate()
+            })
+
+            content_type = "application/json"
+
+        elif method == "POST" and path == "/move":
+
+            data = json.loads(
+                request.split("\r\n\r\n")[1]
+            )
+
+            role = data["role"]
+
+            move_text = data["move"]
+
+            move = chess.Move.from_uci(move_text)
+
+            if move not in board.legal_moves:
+
+                response_data = {
+                    "success": False,
+                    "message": "Movimiento ilegal"
+                }
+
+            else:
+
+                turn = (
+                    "white"
+                    if board.turn
+                    else "black"
+                )
+
+                if role != turn:
+
+                    response_data = {
+                        "success": False,
+                        "message": "No es tu turno"
+                    }
+
+                else:
+
+                    board.push(move)
+
+                    response_data = {
+                        "success": True,
+                        "fen": board.fen()
+                    }
+
+                    if board.is_checkmate():
+
+                        winner = (
+                            "Blancas"
+                            if board.turn == chess.BLACK
+                            else "Negras"
+                        )
+
+                        response_data["game_over"] = (
+                            f"Jaque mate. Ganaron las {winner}"
+                        )
+
+                    elif board.is_stalemate():
+
+                        response_data["game_over"] = "Empate"
+
+            body = json.dumps(response_data)
+
+            content_type = "application/json"
+
+        else:
+
+            body = "404"
+
+            content_type = "text/plain"
+
+        response = "HTTP/1.1 200 OK\r\n"
+
+        response += f"Content-Type: {content_type}\r\n"
+
+        response += "Access-Control-Allow-Origin: *\r\n"
+
+        response += "\r\n"
+
+        response += body
+
+        client.send(response.encode())
+
+    except Exception as e:
+
+        response = "HTTP/1.1 500 Internal Server Error\r\n"
+
+        response += "Content-Type: text/plain\r\n"
+
+        response += "\r\n"
+
+        response += str(e)
+
+        client.send(response.encode())
+
+    client.close()
